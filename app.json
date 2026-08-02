@@ -1,0 +1,31 @@
+{
+  "id": "53f5ca38-a9dc-4297-963d-cc5bc9a1b663",
+  "name": "URA_EFRIS_Integration",
+  "publisher": "Adroit Solutions Ltd.",
+  "description": "URA EFRIS Integration",
+  "version": "1.0.0.1",
+  "runtime": "6.0",
+  "showMyCode": true,
+  "target": "OnPrem",
+  "platform": "17.0.23708.0",
+  "dependencies": [
+    {
+      "id": "7a20bbee-481a-4349-9162-ffcd9fe88268",
+      "name": "JsonHttp",
+      "version": "1.0.0.0",
+      "publisher": "Adroit Solutions Ltd"
+    },
+    {
+      "id": "c1335042-3002-4257-bf8a-75c898ccb1b8",
+      "name": "Application",
+      "version": "17.0.0.0",
+      "publisher": "Microsoft"
+    }
+  ],
+  "idRanges": [
+    {
+      "from": 50000,
+      "to": 50200
+    }
+  ]
+}
