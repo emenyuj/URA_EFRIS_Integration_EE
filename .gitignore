@@ -1,0 +1,55 @@
+# ==========================
+# Business Central / AL
+# ==========================
+
+# Compiled extension package
+*.app
+
+# Symbol packages
+.alpackages/
+
+# RAD publishing output
+.rad/
+
+# Test results
+TestResults/
+
+# Snapshot debugger files
+.snapshot/
+
+# Translation output
+*.g.xlf
+
+# ==========================
+# Visual Studio Code
+# ==========================
+
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+
+# Uncomment if you don't want to share extensions
+# .vscode/extensions.json
+
+# ==========================
+# Logs
+# ==========================
+
+*.log
+
+# ==========================
+# OS Files
+# ==========================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================
+# Temporary Files
+# ==========================
+
+*.tmp
+*.temp
+*.bak
+*.cache

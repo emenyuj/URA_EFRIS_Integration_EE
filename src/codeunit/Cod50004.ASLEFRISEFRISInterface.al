@@ -1291,13 +1291,29 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
     var
         CompanyInfo: Record "Company Information";
         EFRISSetup: Record "Sales & Receivables Setup";
+        ReferenceNo: Text;
     begin
         CompanyInfo.Get();
         EFRISSetup.Get();
+
+
         if EFRISSetup."ASL.EFRIS.TIN" = '' then Error(ErrSetupMissingTIN);
         if EFRISSetup."ASL.EFRIS.LegalName" = '' then Error(ErrSetupMissingLegalName);
         if EFRISSetup."ASL.EFRIS.BusinessName" = '' then Error(ErrSetupMissingBusinessName);
         if EFRISSetup."ASL.EFRIS.E-Mail" = '' then Error(ErrSetupMissingEmail);
+
+        if DocumentType = Enum::"Sales Document Type"::Invoice then
+            ReferenceNo := SalesInvoiceHeader."No."
+        else
+            ReferenceNo := SalesCrMemoHeader."No.";
+
+        OnBeforeSetSellerReferenceNo(
+                        DocumentType,
+                        SalesInvoiceHeader,
+                        SalesCrMEmoHeader,
+                        ReferenceNo);
+
+        SelletDetails.Add('referenceNo', ReferenceNo);
         SelletDetails.Add('tin', EFRISSetup."ASL.EFRIS.TIN");
         SelletDetails.Add('ninBrn', EFRISSetup."ASL.EFRIS.BRN");
         SelletDetails.Add('legalName', EFRISSetup."ASL.EFRIS.LegalName");
@@ -1307,10 +1323,10 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         SelletDetails.Add('linePhone', CompanyInfo."Phone No.");
         SelletDetails.Add('emailAddress', EFRISSetup."ASL.EFRIS.E-Mail");
         SelletDetails.Add('placeOfBusiness', CopyStr(CompanyInfo."Ship-to Address" + CompanyInfo."Ship-to Address 2", 1, 500));
-        if DocumentType = Enum::"Sales Document Type"::Invoice then
+        /* if DocumentType = Enum::"Sales Document Type"::Invoice then
             SelletDetails.Add('referenceNo', SalesInvoiceHeader."No.")
         else
-            SelletDetails.Add('referenceNo', SalesCrMemoHeader."No.");
+            SelletDetails.Add('referenceNo', SalesCrMemoHeader."No."); */
 
         SelletDetails.Add('isCheckReferenceNo', '1');
         SelletDetails.Add('branchCode', '');
@@ -2911,6 +2927,11 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
     [IntegrationEvent(false, false)]
     local procedure OnBeforeGetEFRISInvoiceDetails(var SalesInvoiceHeader: Record "Sales Invoice Header";
     var EFRISSellerReferenceNo: Code[20])
+    begin
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnBeforeSetSellerReferenceNo(DocumentType: Enum "Sales Document Type"; var SalesInvoiceHeader: Record "Sales Invoice Header"; var SalesCrMEmoHeader: Record "Sales Cr.Memo Header"; var ReferenceNo: Text)
     begin
     end;
 }
