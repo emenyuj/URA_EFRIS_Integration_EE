@@ -13,7 +13,11 @@ enum 50027 "ASL.EFRIS.InterfaceCode"
     {
         Caption = 'T103: log in';
     }
-    //value(104; T104) { Caption = 'T104: Get symmetric key and signature information'; }
+    value(104;
+    T104)
+    {
+        Caption = 'T104: Get symmetric key and signature information';
+    }
     //value(105; T105) { Caption = 'T105: forget password'; }
     value(106;
     T106)

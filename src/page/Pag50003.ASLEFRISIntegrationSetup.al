@@ -12,20 +12,55 @@ page 50003 "ASL.EFRIS.IntegrationSetup"
         {
             group("System Setup")
             {
+                field(ConnectionMode; Rec."ASL.EFRIS.ConnectionMode")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Specifies how Business Central connects to EFRIS. Direct Online modes call the URA web service directly (no Offline Mode Enabler); requests are encrypted and signed in Business Central with the uploaded private key.';
+
+                    trigger OnValidate()
+                    begin
+                        CurrPage.Update(true);
+                    end;
+                }
                 field(ServerUrl; Rec."ASL.EFRIS.ServerUrl")
                 {
                     ApplicationArea = All;
                     Caption = 'Server URL';
+                    ToolTip = 'Direct mode: the full URA endpoint (test: https://efristest.ura.go.ug/efrisws/ws/taapp/getInformation, production: https://efrisws.ura.go.ug/ws/taapp/getInformation). Offline Enabler mode: the enabler base URL, e.g. http://127.0.0.1:9880.';
                 }
                 field(DeviceNo; Rec."ASL.EFRIS.DeviceNo")
                 {
                     ApplicationArea = All;
                     Caption = 'Device No.';
+                    ToolTip = 'Specifies the EFRIS device number assigned by URA (EFRIS portal > Device Management). In direct mode it must be entered manually.';
+                }
+                field(TINSetup; Rec."ASL.EFRIS.TIN")
+                {
+                    ApplicationArea = All;
+                    Caption = 'TIN';
+                    ToolTip = 'Specifies the taxpayer TIN registered for the device.';
                 }
                 field(WSVersion; Rec."ASL.EFRIS.WSVersion")
                 {
                     ApplicationArea = All;
                     Caption = 'WS Version';
+                    ToolTip = 'Specifies the client version sent in globalInfo.version (max 15 characters), e.g. 1.1.20191201.';
+                }
+                field(PrivateKeyStatus; PrivateKeyInfo)
+                {
+                    ApplicationArea = All;
+                    Caption = 'Private Key';
+                    Editable = false;
+                    Visible = IsDirectMode;
+                    ToolTip = 'Shows the certificate whose private key is used to sign requests and decrypt the symmetric key. Its public key/thumbprint must be registered for the device on the EFRIS portal.';
+                }
+                field(SymmetricKeyStatus; SymmetricKeyInfo)
+                {
+                    ApplicationArea = All;
+                    Caption = 'Symmetric Key (T104)';
+                    Editable = false;
+                    Visible = IsDirectMode;
+                    ToolTip = 'Shows when the AES symmetric key was last obtained from EFRIS. It is valid for 24 hours and is refreshed automatically.';
                 }
                 field(SystemDictionaryVersion; Rec."ASL.EFRIS.SysDictionaryVersion")
                 {
@@ -40,10 +75,6 @@ page 50003 "ASL.EFRIS.IntegrationSetup"
             }
             group(General)
             {
-                field(TIN; Rec."ASL.EFRIS.TIN")
-                {
-                    ApplicationArea = All;
-                }
                 field(BRN; Rec."ASL.EFRIS.BRN")
                 {
                     ApplicationArea = All;
@@ -110,29 +141,84 @@ page 50003 "ASL.EFRIS.IntegrationSetup"
             action("Get TCS Info")
             {
                 ApplicationArea = All;
+                Caption = 'Get Taxpayer Info';
                 Image = Import;
+                ToolTip = 'Direct mode: logs in to EFRIS (T103) and fills TIN details, legal and business name. Offline Enabler mode: reads TIN/device from the enabler (tcsInfo).';
+
+                trigger OnAction()
+                begin
+                    if Rec.IsEFRISDirectMode() then
+                        GetTaxpayerInfoDirect()
+                    else
+                        GetTaxpayerInfoFromEnabler();
+                end;
+            }
+            action(TestConnection)
+            {
+                ApplicationArea = All;
+                Caption = 'Test Connection (T101)';
+                Image = TestFile;
+                ToolTip = 'Calls T101 (get server time) and compares it with the local time. EFRIS rejects requests whose time differs by more than 10 minutes.';
 
                 trigger OnAction()
                 var
-                    TCSInfo: JsonToken;
-                    SelectToken: JsonToken;
-                    TaxPayerInfo: JsonObject;
-                    CompanyInfo: Record "Company Information";
+                    ServerTime: Text;
                 begin
-                    if (Rec."ASL.EFRIS.ServerUrl" <> '') and ((Rec."ASL.EFRIS.TIN" = '') or (Rec."ASL.EFRIS.BRN" = '') or (Rec."ASL.EFRIS.LegalName" = '')) then begin
-                        if not EFRISInterface.GetTCSInfo(TCSInfo) then Error(GetLastErrorText());
-                        if TCSInfo.SelectToken('TIN', SelectToken) then Rec."ASL.EFRIS.TIN" := SelectToken.AsValue().AsText();
-                        if TCSInfo.SelectToken('deviceNo', SelectToken) then Rec."ASL.EFRIS.DeviceNo" := SelectToken.AsValue().AsText();
-                        if TCSInfo.SelectToken('wsVersion', SelectToken) then Rec."ASL.EFRIS.WSVersion" := SelectToken.AsValue().AsText();
-                        Rec.Modify();
-                        EFRISInterface.GetTaxPayerInfo(Rec."ASL.EFRIS.TIN", TaxPayerInfo);
-                        if TaxPayerInfo.SelectToken('ninBrn', SelectToken) then Rec."ASL.EFRIS.BRN" := SelectToken.AsValue().AsText();
-                        if TaxPayerInfo.SelectToken('legalName', SelectToken) then Rec."ASL.EFRIS.LegalName" := SelectToken.AsValue().AsText();
-                        if TaxPayerInfo.SelectToken('businessName', SelectToken) then Rec."ASL.EFRIS.BusinessName" := SelectToken.AsValue().AsText();
-                        CompanyInfo.Get();
-                        Rec."ASL.EFRIS.E-Mail" := CompanyInfo."E-Mail";
-                        Rec.Modify();
-                    end;
+                    CurrPage.SaveRecord();
+                    if not EFRISInterface.GetServerTime(ServerTime) then
+                        Error(EFRISInterface.GetLastErrorMessage());
+                    Message(MsgServerTime, ServerTime, EFRISCrypto.GetRequestTime());
+                end;
+            }
+            action(UploadPrivateKey)
+            {
+                ApplicationArea = All;
+                Caption = 'Upload Private Key (.pfx)';
+                Image = EncryptionKeys;
+                ToolTip = 'Uploads the taxpayer RSA key pair (.pfx/.p12, 2048 bit) - the same file previously configured in the Offline Mode Enabler. It is stored in isolated storage.';
+
+                trigger OnAction()
+                var
+                    KeyPasswordPage: Page "ASL.EFRIS.KeyPassword";
+                    PfxInStream: InStream;
+                    FileName: Text;
+                    CertificateInfo: Text;
+                begin
+                    if not UploadIntoStream(SelectKeyFileTxt, '', KeyFileFilterTxt, FileName, PfxInStream) then exit;
+                    if KeyPasswordPage.RunModal() <> Action::OK then exit;
+                    CertificateInfo := EFRISCrypto.SavePrivateKey(PfxInStream, KeyPasswordPage.GetPassword());
+                    UpdateKeyInfo();
+                    Message(MsgKeyUploaded, CertificateInfo);
+                end;
+            }
+            action(DeletePrivateKey)
+            {
+                ApplicationArea = All;
+                Caption = 'Remove Private Key';
+                Image = Delete;
+                ToolTip = 'Removes the stored private key and symmetric key.';
+
+                trigger OnAction()
+                begin
+                    if not Confirm(ConfirmDeleteKeyQst, false) then exit;
+                    EFRISCrypto.DeletePrivateKey();
+                    UpdateKeyInfo();
+                end;
+            }
+            action(RefreshSymmetricKey)
+            {
+                ApplicationArea = All;
+                Caption = 'Refresh Symmetric Key (T104)';
+                Image = Refresh;
+                ToolTip = 'Requests a new AES key from EFRIS (T104) and decrypts it with the private key. This normally happens automatically every day.';
+
+                trigger OnAction()
+                begin
+                    CurrPage.SaveRecord();
+                    if not EFRISInterface.RefreshSymmetricKey() then
+                        Error(EFRISInterface.GetLastErrorMessage());
+                    UpdateKeyInfo();
+                    Message(MsgSymmetricKeyRefreshed);
                 end;
             }
             action(UpdateSysDictionary)
@@ -151,11 +237,82 @@ page 50003 "ASL.EFRIS.IntegrationSetup"
     }
     var
         EFRISInterface: Codeunit "ASL.EFRIS.EFRISInterface";
+        EFRISCrypto: Codeunit "ASL.EFRIS.Crypto";
         MsgSysDictionaryUptoDate: TextConst ENU = 'EFRIS System Dictionary Up to date';
+        MsgServerTime: Label 'Connected to EFRIS.\Server time: %1\Request time sent (UTC+3): %2', Comment = '%1 = server time, %2 = local request time';
+        MsgKeyUploaded: Label 'Private key stored.\%1', Comment = '%1 = certificate details';
+        MsgSymmetricKeyRefreshed: Label 'A new symmetric key was obtained from EFRIS.';
+        MsgTaxpayerInfoUpdated: Label 'Taxpayer information updated from EFRIS (T103).';
+        ErrDeviceMismatch: Label 'EFRIS returned device %1 but Device No. in setup is %2.', Comment = '%1 = device from EFRIS, %2 = device in setup';
+        ConfirmDeleteKeyQst: Label 'Remove the stored EFRIS private key? Direct online integration will stop working until a key is uploaded again.';
+        SelectKeyFileTxt: Label 'Select EFRIS private key file';
+        KeyFileFilterTxt: Label 'Key store (*.pfx;*.p12)|*.pfx;*.p12|All files (*.*)|*.*', Locked = true;
+        PrivateKeyInfo: Text;
+        SymmetricKeyInfo: Text;
+        IsDirectMode: Boolean;
 
     trigger OnAfterGetRecord()
-    var
     begin
+        UpdateKeyInfo();
+    end;
+
+    local procedure UpdateKeyInfo()
+    begin
+        IsDirectMode := Rec.IsEFRISDirectMode();
+        if EFRISCrypto.HasPrivateKey() then
+            PrivateKeyInfo := EFRISCrypto.GetCertificateInfo()
+        else
+            PrivateKeyInfo := 'Not uploaded';
+        SymmetricKeyInfo := EFRISInterface.GetSymmetricKeyStatus();
+    end;
+
+    local procedure GetTaxpayerInfoDirect()
+    var
+        LoginInfo: JsonToken;
+        SelectToken: JsonToken;
+        CompanyInfo: Record "Company Information";
+    begin
+        CurrPage.SaveRecord();
+        if not EFRISInterface.GetLoginInfo(LoginInfo) then
+            Error(EFRISInterface.GetLastErrorMessage());
+        if LoginInfo.SelectToken('$.device.deviceNo', SelectToken) then
+            if SelectToken.AsValue().AsText() <> Rec."ASL.EFRIS.DeviceNo" then
+                Error(ErrDeviceMismatch, SelectToken.AsValue().AsText(), Rec."ASL.EFRIS.DeviceNo");
+        if LoginInfo.SelectToken('$.taxpayer.tin', SelectToken) then Rec."ASL.EFRIS.TIN" := CopyStr(SelectToken.AsValue().AsText(), 1, MaxStrLen(Rec."ASL.EFRIS.TIN"));
+        if LoginInfo.SelectToken('$.taxpayer.ninBrn', SelectToken) then Rec."ASL.EFRIS.BRN" := CopyStr(SelectToken.AsValue().AsText(), 1, MaxStrLen(Rec."ASL.EFRIS.BRN"));
+        if LoginInfo.SelectToken('$.taxpayer.id', SelectToken) then Rec."ASL.EFRIS.TaxPayerID" := CopyStr(SelectToken.AsValue().AsText(), 1, MaxStrLen(Rec."ASL.EFRIS.TaxPayerID"));
+        if LoginInfo.SelectToken('$.taxpayer.legalName', SelectToken) then Rec."ASL.EFRIS.LegalName" := CopyStr(SelectToken.AsValue().AsText(), 1, MaxStrLen(Rec."ASL.EFRIS.LegalName"));
+        if LoginInfo.SelectToken('$.taxpayer.businessName', SelectToken) then Rec."ASL.EFRIS.BusinessName" := CopyStr(SelectToken.AsValue().AsText(), 1, MaxStrLen(Rec."ASL.EFRIS.BusinessName"));
+        if Rec."ASL.EFRIS.E-Mail" = '' then begin
+            CompanyInfo.Get();
+            Rec."ASL.EFRIS.E-Mail" := CopyStr(CompanyInfo."E-Mail", 1, MaxStrLen(Rec."ASL.EFRIS.E-Mail"));
+        end;
+        Rec.Modify();
+        UpdateKeyInfo();
+        Message(MsgTaxpayerInfoUpdated);
+    end;
+
+    local procedure GetTaxpayerInfoFromEnabler()
+    var
+        TCSInfo: JsonToken;
+        SelectToken: JsonToken;
+        TaxPayerInfo: JsonObject;
+        CompanyInfo: Record "Company Information";
+    begin
+        if (Rec."ASL.EFRIS.ServerUrl" <> '') and ((Rec."ASL.EFRIS.TIN" = '') or (Rec."ASL.EFRIS.BRN" = '') or (Rec."ASL.EFRIS.LegalName" = '')) then begin
+            if not EFRISInterface.GetTCSInfo(TCSInfo) then Error(GetLastErrorText());
+            if TCSInfo.SelectToken('TIN', SelectToken) then Rec."ASL.EFRIS.TIN" := SelectToken.AsValue().AsText();
+            if TCSInfo.SelectToken('deviceNo', SelectToken) then Rec."ASL.EFRIS.DeviceNo" := SelectToken.AsValue().AsText();
+            if TCSInfo.SelectToken('wsVersion', SelectToken) then Rec."ASL.EFRIS.WSVersion" := SelectToken.AsValue().AsText();
+            Rec.Modify();
+            EFRISInterface.GetTaxPayerInfo(Rec."ASL.EFRIS.TIN", TaxPayerInfo);
+            if TaxPayerInfo.SelectToken('ninBrn', SelectToken) then Rec."ASL.EFRIS.BRN" := SelectToken.AsValue().AsText();
+            if TaxPayerInfo.SelectToken('legalName', SelectToken) then Rec."ASL.EFRIS.LegalName" := SelectToken.AsValue().AsText();
+            if TaxPayerInfo.SelectToken('businessName', SelectToken) then Rec."ASL.EFRIS.BusinessName" := SelectToken.AsValue().AsText();
+            CompanyInfo.Get();
+            Rec."ASL.EFRIS.E-Mail" := CompanyInfo."E-Mail";
+            Rec.Modify();
+        end;
     end;
 
     procedure UpdateSystemDictionary()

@@ -9,10 +9,34 @@ tableextension 50053 "ASL.EFRIS.IntegerationSetup" extends "Sales & Receivables 
             Caption = 'Server URL';
             DataClassification = ToBeClassified;
         }
+        field(70615609; "ASL.EFRIS.ConnectionMode"; Enum "ASL.EFRIS.ConnectionMode")
+        {
+            Caption = 'Connection Mode';
+            DataClassification = SystemMetadata;
+
+            trigger OnValidate()
+            var
+                EFRISCrypto: Codeunit "ASL.EFRIS.Crypto";
+            begin
+                case "ASL.EFRIS.ConnectionMode" of
+                    "ASL.EFRIS.ConnectionMode"::"Direct - URA Test":
+                        "ASL.EFRIS.ServerUrl" := EFRISTestUrlTok;
+                    "ASL.EFRIS.ConnectionMode"::"Direct - URA Production":
+                        "ASL.EFRIS.ServerUrl" := EFRISProductionUrlTok;
+                    "ASL.EFRIS.ConnectionMode"::"Offline Enabler":
+                        if ("ASL.EFRIS.ServerUrl" = '') or ("ASL.EFRIS.ServerUrl".Contains('ura.go.ug')) then
+                            "ASL.EFRIS.ServerUrl" := EFRISOfflineEnablerUrlTok;
+                end;
+                if "ASL.EFRIS.WSVersion" = '' then
+                    "ASL.EFRIS.WSVersion" := EFRISDefaultVersionTok;
+                // the symmetric key is environment specific
+                if "ASL.EFRIS.ConnectionMode" <> xRec."ASL.EFRIS.ConnectionMode" then
+                    EFRISCrypto.ClearAESKey();
+            end;
+        }
         field(70615582; "ASL.EFRIS.TIN"; text[20])
         {
             Caption = 'TIN';
-            Editable = false;
             DataClassification = ToBeClassified;
         }
         field(70615583; "ASL.EFRIS.BRN"; Text[50])
@@ -24,7 +48,6 @@ tableextension 50053 "ASL.EFRIS.IntegerationSetup" extends "Sales & Receivables 
         field(70615584; "ASL.EFRIS.DeviceNo"; Text[50])
         {
             Caption = 'Device No.';
-            Editable = false;
             DataClassification = ToBeClassified;
         }
         field(70615585; "ASL.EFRIS.TaxPayerID"; Text[50])
@@ -53,7 +76,6 @@ tableextension 50053 "ASL.EFRIS.IntegerationSetup" extends "Sales & Receivables 
         field(70615591; "ASL.EFRIS.WSVersion"; Text[50])
         {
             Caption = 'WS Version';
-            Editable = false;
             DataClassification = ToBeClassified;
         }
         field(70615592; "ASL.EFRIS.IntegrationStartDate"; Date)
@@ -146,4 +168,15 @@ tableextension 50053 "ASL.EFRIS.IntegerationSetup" extends "Sales & Receivables 
             DataClassification = ToBeClassified;
         }
     }
+
+    var
+        EFRISTestUrlTok: Label 'https://efristest.ura.go.ug/efrisws/ws/taapp/getInformation', Locked = true;
+        EFRISProductionUrlTok: Label 'https://efrisws.ura.go.ug/ws/taapp/getInformation', Locked = true;
+        EFRISOfflineEnablerUrlTok: Label 'http://127.0.0.1:9880', Locked = true;
+        EFRISDefaultVersionTok: Label '1.1.20191201', Locked = true;
+
+    procedure IsEFRISDirectMode(): Boolean
+    begin
+        exit("ASL.EFRIS.ConnectionMode" in ["ASL.EFRIS.ConnectionMode"::"Direct - URA Test", "ASL.EFRIS.ConnectionMode"::"Direct - URA Production"]);
+    end;
 }

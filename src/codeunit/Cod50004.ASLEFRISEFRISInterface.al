@@ -26,8 +26,8 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         UnknownErrorMsg: TextConst ENU = 'An Unknown error has occured';
         ErrServerUrlNotSet: TextConst ENU = 'Server Url not set in EFRIS Integration Setup';
         ErrEFRISSetupNotFound: TextConst ENU = 'EFRIS Setup Not Found';
-        ErrMissingEFRISDeviceNo: TextConst ENU = 'Device No. not set in EFRIS Integration Setup. Click on the GetTCSInfo action on the EFRIS Integration Setup page to complete setup';
-        ErrMissingEFRISTIN: TextConst ENU = 'TIN not set in EFRIS Integration Setup. Click on the GetTCSInfo action on the EFRIS Integration Setup page to complete setup';
+        ErrMissingEFRISDeviceNo: TextConst ENU = 'Device No. not set in EFRIS Integration Setup. Enter the device number assigned by URA (direct mode) or use the Get Taxpayer Info action (Offline Enabler mode)';
+        ErrMissingEFRISTIN: TextConst ENU = 'TIN not set in EFRIS Integration Setup. Enter the TIN (direct mode) or use the Get Taxpayer Info action (Offline Enabler mode)';
         ErrSetupMissingLegalName: TextConst ENU = 'Legal Name not set in EFRIS Integration Setup. Click on the GetTCSInfo action on the EFRIS Integration Setup page to complete setup';
         ErrSetupMissingBusinessName: TextConst ENU = 'Business Name not set in EFRIS Integration Setup. Click on the GetTCSInfo action on the EFRIS Integration Setup page to complete setup';
         ErrSetupMissingEmail: TextConst ENU = 'Email not set in EFRIS Integration Setup';
@@ -78,13 +78,27 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         // ---------------------------- TCS Utils -------------------------------------------------------
 
         EventHanler: Codeunit "ASL.EFRIS.EventHandlers";
+        // ---------------------------- Direct (online) mode ---------------------------------------------
+        EFRISCrypto: Codeunit "ASL.EFRIS.Crypto";
+        ErrDirectNoPrivateKey: TextConst ENU = 'Direct EFRIS mode requires the taxpayer private key. Open EFRIS Integration Setup and use ''Upload Private Key (.pfx)''.';
+        ErrDirectBuildRequest: TextConst ENU = 'Could not encrypt/sign the EFRIS request: %1';
+        ErrDirectDecodeResponse: TextConst ENU = 'Could not decrypt the EFRIS response (%1): %2';
+        ErrDirectNoSymmetricKey: TextConst ENU = 'EFRIS T104 response did not contain a symmetric key (passowrdDes).';
+        ErrDirectSymmetricKey: TextConst ENU = 'Could not obtain the EFRIS symmetric key (T104): %1';
+        ErrNotDirectMode: TextConst ENU = 'This action is only available when Connection Mode is a Direct Online mode.';
+        ErrEnablerOnly: TextConst ENU = 'tcsInfo is only available through the Offline Mode Enabler. In Direct Online mode use Get Taxpayer Info (T103).';
+        AESKeyMaxAgeMs: Integer;
 
 
     [TryFunction]
     procedure GetTCSInfo(var Response: JsonToken)
     var
         Request: JsonToken;
+        EFRISSetup: Record "Sales & Receivables Setup";
     begin
+        // Offline Mode Enabler only. In direct mode use GetLoginInfo (T103).
+        EFRISSetup.Get();
+        if EFRISSetup.IsEFRISDirectMode() then Error(ErrEnablerOnly);
         if not SendRequest('/tcsInfo', "ASL.Http.HttpMethod"::GET, Request, Response) then Error(GetLastErrorText());
         if not LastHttpSuccess then Error(StrSubstNo(ErrHttp, LastHttpStatusCode, LastHttpReasonPhrase));
     end;
@@ -121,7 +135,12 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
     var
         TCSInfo: JsonToken;
         OnlineStatus: JsonToken;
+        EFRISSetup: Record "Sales & Receivables Setup";
+        ServerTime: Text;
     begin
+        EFRISSetup.Get();
+        if EFRISSetup.IsEFRISDirectMode() then
+            exit(GetServerTime(ServerTime));
         if GetTCSInfo(TCSInfo) then begin
             if TCSInfo.SelectToken('onlineStatus', OnlineStatus) then exit(OnlineStatus.AsValue().AsBoolean());
         end
@@ -1417,7 +1436,7 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         BasicInfo.Add('oriInvoiceId', OriInvoiceId);
         BasicInfo.Add('invoiceType', Format(InvoiceType.AsInteger(), 0, 1));
         BasicInfo.Add('invoiceKind', Format(Enum::"ASL.EFRIS.InvoiceKind"::Invoice.AsInteger(), 0, 1));
-        BasicInfo.Add('dataSource', Format(Enum::"ASL.EFRIS.DataSource"::Mis.AsInteger(), 0, 1));
+        BasicInfo.Add('dataSource', GetDataSourceCode());
         BasicInfo.Add('invoiceIndustryCode', Format(InvoiceIndustryCode.AsInteger(), 0, 1));
         if IsBatch then
             BasicInfo.Add('isBatch', '1')
@@ -1988,7 +2007,7 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         CrNoteApplnRequest.Add('contactName', EFRISSetup."ASL.EFRIS.CrNotesContactName");
         CrNoteApplnRequest.Add('contactMobileNum', EFRISSetup."ASL.EFRIS.CrNotesContactMobile");
         CrNoteApplnRequest.Add('contactEmail', EFRISSetup."ASL.EFRIS.CrNotesContactEmail");
-        CrNoteApplnRequest.Add('source', Format(Enum::"ASL.EFRIS.DataSource"::Mis.AsInteger(), 0, 1));
+        CrNoteApplnRequest.Add('source', GetDataSourceCode());
         CrNoteApplnRequest.Add('remarks', SalesCrMemo."ASL.EFRIS.Remarks");
         CrNoteApplnRequest.Add('sellersReferenceNo', SalesCrMemo."No.");
         // lines
@@ -2606,6 +2625,25 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
     RequestContent: JsonToken;
     var ResponseContent: JsonToken): Boolean
     var
+        EFRISSetup: Record "Sales & Receivables Setup";
+        FailedAESKey: Text;
+        RetryWithNewKey: Boolean;
+        Success: Boolean;
+    begin
+        EFRISSetup.Get();
+        if not EFRISSetup.IsEFRISDirectMode() then
+            exit(SendInterfaceRequestViaEnabler(InterfaceCode, RequestContent, ResponseContent));
+        // Direct online mode: encrypt + sign locally and call the URA web service
+        Success := SendDirectInterfaceRequest(InterfaceCode, RequestContent, ResponseContent, '', RetryWithNewKey, FailedAESKey);
+        if (not Success) and RetryWithNewKey then // symmetric key rejected/expired on the server: get a fresh one and retry once
+            Success := SendDirectInterfaceRequest(InterfaceCode, RequestContent, ResponseContent, FailedAESKey, RetryWithNewKey, FailedAESKey);
+        exit(Success);
+    end;
+
+    local procedure SendInterfaceRequestViaEnabler(InterfaceCode: Enum "ASL.EFRIS.InterfaceCode";
+    RequestContent: JsonToken;
+    var ResponseContent: JsonToken): Boolean
+    var
         RequestBody: JsonObject;
         RequestBodyJsonText: Text;
         GlobalInfo: JsonObject;
@@ -2672,7 +2710,10 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         // Message(ResponseText);
         RequestBody.Add('data', Data);
         // globalInfo
-        InitGlobalInfo(GlobalInfo, InterfaceCode);
+        if not InitGlobalInfo(GlobalInfo, InterfaceCode) then begin
+            LogError(LastErrorMessage);
+            exit(false);
+        end;
         RequestBody.Add('globalInfo', GlobalInfo);
         // returnStateInfo
         RequestReturnStateInfo.Add('returnCode', '');
@@ -2762,7 +2803,7 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
     var
         ResponseText: Text;
     begin
-        if not JsonHttpHandler.RequestJson(GetServerUrl() + '/efristcs/ws/tcsapp' + Path, Method, '', '', Request, Response) then Error(GetLastErrorText());
+        if not JsonHttpHandler.RequestJson(GetEndpointUrl(Path), Method, '', '', Request, Response) then Error(GetLastErrorText());
         // Response.WriteTo(ResponseText);
         // Message(ResponseText);
         LastHttpSuccess := JsonHttpHandler.IsLastHttpSuccess();
@@ -2777,10 +2818,9 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
     local procedure InitGlobalInfo(var GlobalInfo: JsonObject;
     InterfaceCode: Enum "ASL.EFRIS.InterfaceCode"): Boolean
     var
-        TCSInfo: JsonObject;
         ExtendField: JsonObject;
-        CurrentDateTime: DateTime;
         EFRISIntegrationSetup: Record "Sales & Receivables Setup";
+        WSVersion: Text;
     begin
         if not EFRISIntegrationSetup.Get() then begin
             LastErrorMessage := ErrEFRISSetupNotFound;
@@ -2794,26 +2834,30 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
             LastErrorMessage := ErrMissingEFRISTIN;
             exit(false);
         end;
-        CurrentDateTime := CreateDateTime(Today, Time());
-        GlobalInfo.Add('appId', 'AP04');
-        GlobalInfo.Add('brn', EFRISIntegrationSetup."ASL.EFRIS.BRN");
-        GlobalInfo.Add('dataExchangeId', Format(CurrentDateTime, 0, '<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Second dec.,7>'));
-        GlobalInfo.Add('deviceMAC', '1');
-        GlobalInfo.Add('deviceNo', EFRISIntegrationSetup."ASL.EFRIS.DeviceNo");
-        ExtendField.Add('referenceNo', '21PL010020807');
-        ExtendField.Add('responseDateFormat', Format(CurrentDateTime, 0, '<Day,2>/<Month,2>/<Year4>'));
-        ExtendField.Add('responseTimeFormat', Format(CurrentDateTime, 0, '<Day,2>/<Month,2>/<Year4> <Hours24,2>:<Minutes,2>:<Seconds,2>'));
-        GlobalInfo.Add('extendField', ExtendField);
-        GlobalInfo.Add('longitude', '0');
-        GlobalInfo.Add('latitude', '0');
+        WSVersion := EFRISIntegrationSetup."ASL.EFRIS.WSVersion";
+        if WSVersion = '' then
+            WSVersion := '1.1.20191201';
+        GlobalInfo.Add('appId', 'AP04'); // AP04 - system to system
+        GlobalInfo.Add('version', WSVersion);
+        GlobalInfo.Add('dataExchangeId', EFRISCrypto.NewDataExchangeId()); // UUID, max 32 chars
         GlobalInfo.Add('interfaceCode', StrSubstNo('T%1', InterfaceCode.AsInteger()));
         GlobalInfo.Add('requestCode', 'TP');
-        GlobalInfo.Add('requestTime', Format(CurrentDateTime, 0, '<Year4>-<Month,2>-<Day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>'));
+        GlobalInfo.Add('requestTime', EFRISCrypto.GetRequestTime()); // UTC+3, must be within 10 minutes of URA server time
         GlobalInfo.Add('responseCode', 'TA');
-        GlobalInfo.Add('taxpayerID', '1');
-        GlobalInfo.Add('tin', EFRISIntegrationSetup."ASL.EFRIS.TIN");
         GlobalInfo.Add('userName', 'admin');
-        GlobalInfo.Add('version', EFRISIntegrationSetup."ASL.EFRIS.WSVersion");
+        GlobalInfo.Add('deviceMAC', 'FFFFFFFFFFFF');
+        GlobalInfo.Add('deviceNo', EFRISIntegrationSetup."ASL.EFRIS.DeviceNo");
+        GlobalInfo.Add('tin', EFRISIntegrationSetup."ASL.EFRIS.TIN");
+        GlobalInfo.Add('brn', EFRISIntegrationSetup."ASL.EFRIS.BRN");
+        GlobalInfo.Add('taxpayerID', '1');
+        GlobalInfo.Add('longitude', '0');
+        GlobalInfo.Add('latitude', '0');
+        GlobalInfo.Add('agentType', '0');
+        ExtendField.Add('responseDateFormat', 'dd/MM/yyyy');
+        ExtendField.Add('responseTimeFormat', 'dd/MM/yyyy HH:mm:ss');
+        ExtendField.Add('referenceNo', '21PL010020807');
+        GlobalInfo.Add('extendField', ExtendField);
+        exit(true);
     end;
 
     [TryFunction]
@@ -2832,6 +2876,299 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         EFRISIntegrationSetup.Get();
         if EFRISIntegrationSetup."ASL.EFRIS.ServerUrl" = '' then Error(ErrServerUrlNotSet);
         exit(EFRISIntegrationSetup."ASL.EFRIS.ServerUrl");
+    end;
+
+    local procedure GetEndpointUrl(Path: Text): Text
+    var
+        EFRISIntegrationSetup: Record "Sales & Receivables Setup";
+    begin
+        EFRISIntegrationSetup.Get();
+        // Direct mode: Server URL is the full URA endpoint, e.g. https://efrisws.ura.go.ug/ws/taapp/getInformation
+        if EFRISIntegrationSetup.IsEFRISDirectMode() then
+            exit(GetServerUrl());
+        // Offline Mode Enabler: http://<host>:9880 + /efristcs/ws/tcsapp/<path>
+        exit(GetServerUrl() + '/efristcs/ws/tcsapp' + Path);
+    end;
+
+    local procedure GetDataSourceCode(): Text
+    var
+        EFRISIntegrationSetup: Record "Sales & Receivables Setup";
+    begin
+        EFRISIntegrationSetup.Get();
+        if EFRISIntegrationSetup.IsEFRISDirectMode() then
+            exit(Format(Enum::"ASL.EFRIS.DataSource"::"WebService API".AsInteger(), 0, 1)); // 103
+        exit(Format(Enum::"ASL.EFRIS.DataSource"::Mis.AsInteger(), 0, 1)); // 104 (as used with the enabler)
+    end;
+
+    // ------------------------------- Direct (online) mode -------------------------------------------------------------------
+    // Replaces the Offline Mode Enabler. Flow per URA "System to System" guide:
+    //   T101 server time (connectivity / clock check, +-10 min)
+    //   T104 symmetric (AES) key: passowrdDes is RSA-encrypted with the device public key -> decrypt with private key
+    //   all other interfaces: content = Base64(AES(json)), signature = Base64(SHA1withRSA(content)), codeType 1 / encryptCode 2
+    //   responses with codeType 1 are AES-decrypted with the same key (and gunzipped when zipCode = 1)
+
+    procedure GetServerTime(var ServerTime: Text): Boolean
+    var
+        EmptyRequest: JsonObject;
+        Response: JsonToken;
+        SelectToken: JsonToken;
+    begin
+        ServerTime := '';
+        if not SendInterfaceRequest(Enum::"ASL.EFRIS.InterfaceCode"::T101, EmptyRequest.AsToken(), Response) then exit(false);
+        if Response.SelectToken('currentTime', SelectToken) then ServerTime := SelectToken.AsValue().AsText();
+        exit(true);
+    end;
+
+    procedure GetLoginInfo(var LoginInfo: JsonToken): Boolean
+    var
+        EmptyRequest: JsonObject;
+    begin
+        exit(SendInterfaceRequest(Enum::"ASL.EFRIS.InterfaceCode"::T103, EmptyRequest.AsToken(), LoginInfo));
+    end;
+
+    procedure RefreshSymmetricKey(): Boolean
+    var
+        EFRISSetup: Record "Sales & Receivables Setup";
+        AESKey: Text;
+    begin
+        EFRISSetup.Get();
+        if not EFRISSetup.IsEFRISDirectMode() then Error(ErrNotDirectMode);
+        exit(RequestSymmetricKey(AESKey));
+    end;
+
+    procedure GetSymmetricKeyStatus(): Text
+    var
+        AESKey: Text;
+        ObtainedAt: DateTime;
+    begin
+        if not EFRISCrypto.GetAESKey(AESKey, ObtainedAt) then exit('Not obtained yet');
+        exit(StrSubstNo('Obtained %1, refreshed automatically after %2 hours', ObtainedAt, Round(GetAESKeyMaxAgeMs() / 3600000, 1)));
+    end;
+
+    local procedure GetAESKeyMaxAgeMs(): Integer
+    begin
+        // URA: the symmetric key is valid for 24 hours. Refresh a few hours early.
+        if AESKeyMaxAgeMs = 0 then AESKeyMaxAgeMs := 20 * 60 * 60 * 1000;
+        exit(AESKeyMaxAgeMs);
+    end;
+
+    local procedure InterfaceUsesSymmetricKey(InterfaceCode: Enum "ASL.EFRIS.InterfaceCode"): Boolean
+    begin
+        // T101 (server time) and T104 (get key) work without the symmetric key
+        exit(not (InterfaceCode.AsInteger() in [101, 102, 104]));
+    end;
+
+    local procedure IsRequestEncrypted(InterfaceCode: Enum "ASL.EFRIS.InterfaceCode"): Boolean
+    begin
+        // Interfaces whose request is defined as "Request Encrypted: N" in the EFRIS Interface Design (v24.0.1)
+        exit(not (InterfaceCode.AsInteger() in [101, 102, 103, 104, 115, 123, 124, 125, 135, 136, 138]));
+    end;
+
+    local procedure GetValidAESKey(RejectedAESKey: Text; var AESKey: Text): Boolean
+    var
+        ObtainedAt: DateTime;
+        Age: Duration;
+    begin
+        if EFRISCrypto.GetAESKey(AESKey, ObtainedAt) then
+            if (AESKey <> RejectedAESKey) and (ObtainedAt <> 0DT) then begin
+                Age := CurrentDateTime() - ObtainedAt;
+                if (Age >= 0) and (Age < GetAESKeyMaxAgeMs()) then exit(true); // shared key still valid (possibly refreshed by another session)
+            end;
+        exit(RequestSymmetricKey(AESKey));
+    end;
+
+    local procedure RequestSymmetricKey(var AESKey: Text): Boolean
+    var
+        EmptyRequest: JsonObject;
+        Response: JsonToken;
+        SelectToken: JsonToken;
+        RetryWithNewKey: Boolean;
+        UnusedKey: Text;
+    begin
+        AESKey := '';
+        if not SendDirectInterfaceRequest(Enum::"ASL.EFRIS.InterfaceCode"::T104, EmptyRequest.AsToken(), Response, '', RetryWithNewKey, UnusedKey) then begin
+            LastErrorMessage := StrSubstNo(ErrDirectSymmetricKey, GetLastErrorMessage());
+            exit(false);
+        end;
+        if not Response.SelectToken('passowrdDes', SelectToken) then // (sic) field name as defined by URA
+            if not Response.SelectToken('passwordDes', SelectToken) then begin
+                LastErrorMessage := ErrDirectNoSymmetricKey;
+                LogError(LastErrorMessage);
+                exit(false);
+            end;
+        if not TryDecryptSymmetricKey(SelectToken.AsValue().AsText(), AESKey) then begin
+            LastErrorMessage := StrSubstNo(ErrDirectSymmetricKey, GetLastErrorText());
+            LogError(LastErrorMessage);
+            exit(false);
+        end;
+        EFRISCrypto.StoreAESKey(AESKey);
+        LogTrace('EFRIS symmetric key (T104) refreshed');
+        exit(true);
+    end;
+
+    [TryFunction]
+    local procedure TryDecryptSymmetricKey(PassowrdDes: Text; var AESKey: Text)
+    begin
+        AESKey := EFRISCrypto.DecryptSymmetricKey(PassowrdDes);
+    end;
+
+    [TryFunction]
+    local procedure TryBuildDirectRequestData(RequestJsonText: Text; EncryptRequest: Boolean; AESKey: Text; var Data: JsonObject)
+    var
+        DataDescription: JsonObject;
+        Content: Text;
+    begin
+        if RequestJsonText <> '' then begin
+            if EncryptRequest then
+                Content := EFRISCrypto.EncryptContent(RequestJsonText, AESKey)
+            else
+                Content := EFRISCrypto.EncodePlainContent(RequestJsonText);
+            Data.Add('content', Content);
+            Data.Add('signature', EFRISCrypto.SignContent(Content)); // Signature = Sign(content)
+        end else begin
+            Data.Add('content', '');
+            Data.Add('signature', '');
+        end;
+        if EncryptRequest and (RequestJsonText <> '') then begin
+            DataDescription.Add('codeType', '1'); // ciphertext
+            DataDescription.Add('encryptCode', '2'); // AES
+        end else begin
+            DataDescription.Add('codeType', '0'); // plain text
+            DataDescription.Add('encryptCode', '1');
+        end;
+        DataDescription.Add('zipCode', '0');
+        Data.Add('dataDescription', DataDescription);
+    end;
+
+    local procedure SendDirectInterfaceRequest(InterfaceCode: Enum "ASL.EFRIS.InterfaceCode";
+    RequestContent: JsonToken;
+    var ResponseContent: JsonToken;
+    RejectedAESKey: Text;
+    var RetryWithNewKey: Boolean;
+    var UsedAESKey: Text): Boolean
+    var
+        RequestBody: JsonObject;
+        Data: JsonObject;
+        GlobalInfo: JsonObject;
+        RequestReturnStateInfo: JsonObject;
+        Response: JsonToken;
+        SelectToken: JsonToken;
+        RequestBodyJsonText: Text;
+        ResponseContentText: Text;
+        ResponseCodeType: Text;
+        ResponseZipCode: Text;
+        AESKey: Text;
+        UsesAESKey: Boolean;
+        ResponseError: Boolean;
+        EmptyResponse: JsonToken;
+    begin
+        RetryWithNewKey := false;
+        LastReturnStateCode := '';
+        LastReturnStateMessage := '';
+        LastErrorMessage := '';
+        ResponseContent := EmptyResponse;
+        if not IsJsonTokenEmpty(RequestContent) then RequestContent.WriteTo(RequestBodyJsonText);
+
+        UsesAESKey := InterfaceUsesSymmetricKey(InterfaceCode);
+        if (UsesAESKey or (RequestBodyJsonText <> '') or (InterfaceCode = Enum::"ASL.EFRIS.InterfaceCode"::T104)) and not EFRISCrypto.HasPrivateKey() then begin
+            LastErrorMessage := ErrDirectNoPrivateKey;
+            LogError(LastErrorMessage);
+            exit(false);
+        end;
+        if UsesAESKey then begin
+            if not GetValidAESKey(RejectedAESKey, AESKey) then exit(false); // LastErrorMessage set
+            UsedAESKey := AESKey;
+        end;
+
+        // data
+        if not TryBuildDirectRequestData(RequestBodyJsonText, UsesAESKey and IsRequestEncrypted(InterfaceCode), AESKey, Data) then begin
+            LastErrorMessage := StrSubstNo(ErrDirectBuildRequest, GetLastErrorText());
+            LogError(LastErrorMessage);
+            exit(false);
+        end;
+        RequestBody.Add('data', Data);
+        // globalInfo
+        if not InitGlobalInfo(GlobalInfo, InterfaceCode) then begin
+            LogError(LastErrorMessage);
+            exit(false);
+        end;
+        RequestBody.Add('globalInfo', GlobalInfo);
+        // returnStateInfo
+        RequestReturnStateInfo.Add('returnCode', '');
+        RequestReturnStateInfo.Add('returnMessage', '');
+        RequestBody.Add('returnStateInfo', RequestReturnStateInfo);
+
+        // send
+        ResponseError := false;
+        if SendRequest('', "ASL.Http.HttpMethod"::POST, RequestBody.AsToken(), Response) then begin
+            if Response.SelectToken('$.returnStateInfo.returnCode', SelectToken) then
+                if SelectToken.IsValue() then LastReturnStateCode := CopyStr(SelectToken.AsValue().AsText(), 1, MaxStrLen(LastReturnStateCode));
+            if Response.SelectToken('$.returnStateInfo.returnMessage', SelectToken) then
+                if SelectToken.IsValue() then
+                    if not SelectToken.AsValue().IsNull() then LastReturnStateMessage := SelectToken.AsValue().AsText();
+            // Only check response content when response code is 00 (SUCCESS) or 45 (Partial failure)
+            if (LastReturnStateCode = '00') or (LastReturnStateCode = '45') then begin
+                if Response.SelectToken('$.data.dataDescription.codeType', SelectToken) then
+                    if SelectToken.IsValue() then ResponseCodeType := SelectToken.AsValue().AsText();
+                if Response.SelectToken('$.data.dataDescription.zipCode', SelectToken) then
+                    if SelectToken.IsValue() then ResponseZipCode := SelectToken.AsValue().AsText();
+                if Response.SelectToken('$.data.content', SelectToken) then
+                    if SelectToken.IsValue() then
+                        if not (SelectToken.AsValue().IsNull() or SelectToken.AsValue().IsUndefined()) then
+                            if not EFRISCrypto.TryDecodeResponseContent(SelectToken.AsValue().AsText(), ResponseCodeType = '1', ResponseZipCode = '1', AESKey, ResponseContentText) then begin
+                                ResponseError := true;
+                                LastErrorMessage := StrSubstNo(ErrDirectDecodeResponse, LastReturnStateCode, GetLastErrorText());
+                                LogError(LastErrorMessage);
+                                // undecryptable response normally means the symmetric key changed on the server
+                                RetryWithNewKey := UsesAESKey and (RejectedAESKey = '') and (ResponseCodeType = '1');
+                            end else
+                                if ResponseContentText <> '' then
+                                    ResponseContent.ReadFrom(ResponseContentText);
+            end else begin
+                ResponseError := true;
+                LogError(StrSubstNo('%1 %2: %3', InterfaceCode, LastReturnStateCode, LastReturnStateMessage));
+                // 02/03: encryption/decryption failed, 15: unpacking data error -> stale symmetric key
+                RetryWithNewKey := UsesAESKey and (RejectedAESKey = '') and (LastReturnStateCode in ['02', '03', '15']);
+            end;
+        end else begin
+            ResponseError := true;
+            LastErrorMessage := GetLastErrorText();
+            LogError(LastErrorMessage);
+        end;
+        LogInterfaceTrace(InterfaceCode, RequestBodyJsonText, ResponseContentText);
+        exit(not ResponseError);
+    end;
+
+    local procedure IsJsonTokenEmpty(Token: JsonToken): Boolean
+    begin
+        if Token.IsObject() then exit(Token.AsObject().Keys.Count = 0);
+        if Token.IsArray() then exit(Token.AsArray().Count = 0);
+        if Token.IsValue() then exit(Token.AsValue().IsNull() or Token.AsValue().IsUndefined());
+        exit(true);
+    end;
+
+    local procedure LogInterfaceTrace(InterfaceCode: Enum "ASL.EFRIS.InterfaceCode"; RequestJsonText: Text; ResponseJsonText: Text)
+    var
+        EFRISSetup: Record "Sales & Receivables Setup";
+        EFRISLog: Record "ASL.EFRIS.Log";
+        LogOutStream: OutStream;
+    begin
+        // plain (decrypted) request/response are logged, never the key material
+        EFRISSetup.Get();
+        if EFRISSetup."ASL.EFRIS.LogLevel".AsInteger() < "ASL.EFRIS.LogLevel"::TRACE.AsInteger() then exit;
+        EFRISLog.Init();
+        EFRISLog.Time := CreateDateTime(Today, Time);
+        EFRISLog.Level := "ASL.EFRIS.LogLevel"::TRACE;
+        EFRISLog.Message := 'Interface Request (Direct)';
+        EFRISLog.RequestInterfaceCode := InterfaceCode;
+        EFRISLog.RequestContent.CreateOutStream(LogOutStream);
+        LogOutStream.WriteText(RequestJsonText);
+        EFRISLog.ResponseCode := LastReturnStateCode;
+        EFRISLog.ResponseMessage.CreateOutStream(LogOutStream);
+        LogOutStream.WriteText(LastReturnStateMessage);
+        EFRISLog.ResponseContent.CreateOutStream(LogOutStream);
+        LogOutStream.WriteText(ResponseJsonText);
+        EFRISLog.Insert(true);
     end;
 
     local procedure Log(Level: enum "ASL.EFRIS.LogLevel";
