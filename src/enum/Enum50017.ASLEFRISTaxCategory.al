@@ -42,4 +42,8 @@ enum 50017 "ASL.EFRIS.TaxCategory"
     "Others")
     {
     }
+    value(11; "F: VAT OUT OF SCOPE")
+    {
+
+    }
 }

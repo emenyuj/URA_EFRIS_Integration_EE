@@ -1101,7 +1101,35 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                 LineGrossAmount -= LineDiscountGrossAmount;
                 LineTaxAmount -= LineDiscountTaxAmount;
             end;
+
+            //-UPDATE EJ
             if VATZero then
+                VATTaxCategory :=
+                    Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)"
+            else begin
+                VatProdPostingGroup.Get(
+                    SalesInvoiceLines."VAT Prod. Posting Group");
+                VatProdPostingGroup.TestField("ASL.EFRIS.TaxCategory");
+
+                if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                   Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+                then
+                    VATTaxCategory :=
+                        Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+                else
+                    if SalesInvoice."ASL.EFRIS.VATDeemed" then
+                        VATTaxCategory :=
+                            Enum::"ASL.EFRIS.TaxCategory"::"D: Deemed (18%)"
+                    else
+                        if SalesInvoice."ASL.EFRIS.VATExempt" then
+                            VATTaxCategory :=
+                                Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)"
+                        else
+                            VATTaxCategory :=
+                                VatProdPostingGroup."ASL.EFRIS.TaxCategory";
+            end;
+            //New Adj
+            /* if VATZero then
                 VATTaxCategory := Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)"
             else
                 if SalesInvoice."ASL.EFRIS.VATDeemed" then
@@ -1113,7 +1141,7 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                         VatProdPostingGroup.Get(SalesInvoiceLines."VAT Prod. Posting Group");
                         VatProdPostingGroup.TestField("ASL.EFRIS.TaxCategory");
                         VATTaxCategory := VatProdPostingGroup."ASL.EFRIS.TaxCategory";
-                    end;
+                    end; */
             AddSalesTaxDetails(VATTaxCategory, LineGrossAmount, SalesInvoiceLines."VAT %", LineTaxAmount, TaxDetailsAccuml);
             TotalGrossAmount += LineGrossAmount;
             TotalTaxAmount += LineTaxAmount;
@@ -1562,16 +1590,40 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
             else // set discount inc. vat
                 InvoiceLineDetails.Add('discountTotal', Format(-Round((100 + Line."VAT %") * (Line."Line Discount Amount" + Line."Inv. Discount Amount") * 0.01, 0.00000001, '='), 0, 1));
         end;
+        //
         VatProdPostingGroup.Get(Line."VAT Prod. Posting Group");
-        if Zero or (VatProdPostingGroup."ASL.EFRIS.TaxCategory" = Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)") then
+
+        if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+           Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+        then
             InvoiceLineDetails.Add('taxRate', '0')
         else
-            if Exempt or (VatProdPostingGroup."ASL.EFRIS.TaxCategory" = Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)") then
-                InvoiceLineDetails.Add('taxRate', '-')
+            if Zero or
+               (VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)")
+            then
+                InvoiceLineDetails.Add('taxRate', '0')
             else
-                InvoiceLineDetails.Add('taxRate', Format(Line."VAT %" * 0.01, 0, 1));
+                if Exempt or
+                   (VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                    Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)")
+                then
+                    InvoiceLineDetails.Add('taxRate', '-')
+                else
+                    InvoiceLineDetails.Add(
+                        'taxRate',
+                        Format(Line."VAT %" * 0.01, 0, 1));
+
         InvoiceLineDetails.Add('tax', Format(LineTaxAmount, 0, 1));
         InvoiceLineDetails.Add('total', Format(LineGrossAmount, 0, 1));
+
+        if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+           Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+        then
+            InvoiceLineDetails.Add('vatApplicableFlag', '0')
+        else
+            InvoiceLineDetails.Add('vatApplicableFlag', '1');
+        //
         if Deemed then begin
             InvoiceLineDetails.Add('deemedFlag', Format(Enum::"ASL.EFRIS.Deemed"::"Deemed".AsInteger(), 0, 1));
             InvoiceLineDetails.Add('deemedExemptCode', '101');
@@ -1656,7 +1708,9 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         else // set price inc. vat
             GrossAmount := Round((100 + Line."VAT %") * (Line."Line Discount Amount" + Line."Inv. Discount Amount") * 0.01, 0.00000001, '=');
         InvoiceLineDetails.Add('total', Format(-GrossAmount, 0, 1));
-        VatProdPostingGroup.Get(Line."VAT Prod. Posting Group");
+
+
+        /* VatProdPostingGroup.Get(Line."VAT Prod. Posting Group");
         if Zero or (VatProdPostingGroup."ASL.EFRIS.TaxCategory" = Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)") then
             InvoiceLineDetails.Add('taxRate', '0')
         else
@@ -1664,8 +1718,48 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                 InvoiceLineDetails.Add('taxRate', '-')
             else
                 InvoiceLineDetails.Add('taxRate', Format(Line."VAT %" * 0.01, 0, 1));
+
+
         TaxAmount := Round((Line."VAT %" * GrossAmount) / (100 + Line."VAT %"), 0.01, '<');
         InvoiceLineDetails.Add('tax', Format(-TaxAmount, 0, 1));
+ */
+        VatProdPostingGroup.Get(Line."VAT Prod. Posting Group");
+
+        if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+           Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+        then
+            InvoiceLineDetails.Add('taxRate', '0')
+        else
+            if Zero or
+               (VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)")
+            then
+                InvoiceLineDetails.Add('taxRate', '0')
+            else
+                if Exempt or
+                   (VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                    Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)")
+                then
+                    InvoiceLineDetails.Add('taxRate', '-')
+                else
+                    InvoiceLineDetails.Add(
+                        'taxRate',
+                        Format(Line."VAT %" * 0.01, 0, 1));
+
+        TaxAmount := Round(
+            (Line."VAT %" * GrossAmount) / (100 + Line."VAT %"),
+            0.01,
+            '<');
+
+        InvoiceLineDetails.Add('tax', Format(-TaxAmount, 0, 1));
+
+        if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+           Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+        then
+            InvoiceLineDetails.Add('vatApplicableFlag', '0')
+        else
+            InvoiceLineDetails.Add('vatApplicableFlag', '1');
+
         InvoiceLineDetails.Add('discountFlag', Format(Enum::"ASL.EFRIS.Discount"::"On Amount".AsInteger(), 0, 1));
         if Deemed then begin
             InvoiceLineDetails.Add('deemedFlag', Format(Enum::"ASL.EFRIS.Deemed"::"Deemed".AsInteger(), 0, 1));
@@ -1717,8 +1811,57 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
             TaxDetails.Add(TaxCategoryCode, TaxAndGrossAmounts);
         end;
     end;
+    //
 
-    local procedure SetTaxDetailFieldValues(TaxCategory: Enum "ASL.EFRIS.TaxCategory";
+    local procedure SetTaxDetailFieldValues(
+        TaxCategory: Enum "ASL.EFRIS.TaxCategory";
+        GrossAmount: Decimal;
+        TaxRate: Decimal;
+        TaxAmount: Decimal;
+        var TaxDetails: JsonArray)
+    var
+        TaxCategoryCode: Text[2];
+        TaxDetailLine: JsonObject;
+    begin
+        TaxCategoryCode := Format(TaxCategory.AsInteger(), 0, 1);
+        if StrLen(TaxCategoryCode) = 1 then
+            TaxCategoryCode := '0' + TaxCategoryCode;
+
+        TaxDetailLine.Add('taxCategory', Format(TaxCategory));
+        TaxDetailLine.Add('taxCategoryCode', TaxCategoryCode);
+        TaxDetailLine.Add(
+            'netAmount',
+            Format(
+                Round(GrossAmount - TaxAmount, 0.00000001, '='),
+                0,
+                1));
+
+        if TaxCategory =
+           Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+        then begin
+            TaxDetailLine.Add('taxRate', '0');
+            TaxDetailLine.Add('taxRateName', '0%');
+        end else
+            if (TaxCategory =
+                Enum::"ASL.EFRIS.TaxCategory"::"D: Deemed (18%)") or
+               (TaxCategory =
+                Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)")
+            then
+                TaxDetailLine.Add('taxRate', '-')
+            else
+                TaxDetailLine.Add(
+                    'taxRate',
+                    Format(Round(TaxRate * 0.01, 0.01, '<'), 0, 1));
+
+        TaxDetailLine.Add('taxAmount', Format(TaxAmount, 0, 1));
+        TaxDetailLine.Add('grossAmount', Format(GrossAmount, 0, 1));
+
+        TaxDetails.Add(TaxDetailLine);
+    end;
+
+    //
+
+    /* local procedure SetTaxDetailFieldValues(TaxCategory: Enum "ASL.EFRIS.TaxCategory";
     GrossAmount: Decimal;
     TaxRate: Decimal;
     TaxAmount: Decimal;
@@ -1736,6 +1879,10 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         if TaxDetailLine.Contains('netAmount') then TaxDetailLine.Remove('netAmount');
         TaxDetailLine.Add('netAmount', Format(Round(GrossAmount - TaxAmount, 0.00000001, '='), 0, 1));
         if TaxDetailLine.Contains('taxRate') then TaxDetailLine.Remove('taxRate');
+        IF TaxCategory = Enum::"ASL.EFRIS.TaxCategory"::"F: VAT Not Applicable" THEN begin
+            TaxDetailLine.Add('taxRate', '0.18')
+        end;
+        if TaxDetailLine.Contains('taxRate') then TaxDetailLine.Remove('taxRate');
         if (TaxCategory = Enum::"ASL.EFRIS.TaxCategory"::"D: Deemed (18%)") or (TaxCategory = Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)") then
             TaxDetailLine.Add('taxRate', '-')
         else
@@ -1745,7 +1892,7 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         if TaxDetailLine.Contains('grossAmount') then TaxDetailLine.Remove('grossAmount');
         TaxDetailLine.Add('grossAmount', Format(GrossAmount, 0, 1));
         TaxDetails.Add(TaxDetailLine);
-    end;
+    end; */
 
     procedure SendCreditNoteApplication(var SalesCrMemo: Record "Sales Cr.Memo Header";
     PreviewMode: Boolean): Boolean
@@ -1900,7 +2047,9 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                 LogError(LastErrorMessage);
                 exit(false);
             end;
-            if SalesInvHeader."ASL.EFRIS.InvoiceIndustryCode" = Enum::"ASL.EFRIS.InvoiceIndustryCode"::Export then
+
+
+            /* if SalesInvHeader."ASL.EFRIS.InvoiceIndustryCode" = Enum::"ASL.EFRIS.InvoiceIndustryCode"::Export then
                 VATTaxCategory := Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)"
             else
                 if SalesInvHeader."ASL.EFRIS.VATDeemed" then
@@ -1912,7 +2061,38 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                         VatProdPostingGroup.Get(CrMemoLines."VAT Prod. Posting Group");
                         VatProdPostingGroup.TestField("ASL.EFRIS.TaxCategory");
                         VATTaxCategory := VatProdPostingGroup."ASL.EFRIS.TaxCategory";
-                    end;
+                    end; */
+            if SalesInvHeader."ASL.EFRIS.InvoiceIndustryCode" =
+               Enum::"ASL.EFRIS.InvoiceIndustryCode"::Export
+            then
+                VATTaxCategory :=
+                    Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)"
+            else begin
+                VatProdPostingGroup.Get(
+                    CrMemoLines."VAT Prod. Posting Group");
+                VatProdPostingGroup.TestField("ASL.EFRIS.TaxCategory");
+
+                if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                   Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+                then
+                    VATTaxCategory :=
+                        Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+                else
+                    if SalesInvHeader."ASL.EFRIS.VATDeemed" then
+                        VATTaxCategory :=
+                            Enum::"ASL.EFRIS.TaxCategory"::"D: Deemed (18%)"
+                    else
+                        if SalesInvHeader."ASL.EFRIS.VATExempt" then
+                            VATTaxCategory :=
+                                Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)"
+                        else
+                            VATTaxCategory :=
+                                VatProdPostingGroup."ASL.EFRIS.TaxCategory";
+            end;
+
+            //
+
+
             AddSalesTaxDetails(VATTaxCategory, LineGrossAmount, CrMemoLines."VAT %", LineTaxAmount, TaxDetailsAccuml);
             TotalGrossAmount += LineGrossAmount;
             TotalTaxAmount += LineTaxAmount;
@@ -2079,7 +2259,9 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         if (Line."Line Discount Amount" > 0) or (Line."Inv. Discount Amount" > 0) then LineGrossAmount += (Line."Line Discount Amount" + Line."Inv. Discount Amount");
         LineTaxAmount := Round((Line."VAT %" * LineGrossAmount) / (100 + Line."VAT %"), 0.01, '<');
         CrNoteLineDetails.Add('total', Format(LineGrossAmount, 0, 1));
-        VatProdPostingGroup.Get(Line."VAT Prod. Posting Group");
+
+
+        /* VatProdPostingGroup.Get(Line."VAT Prod. Posting Group");
         if Zero or (VatProdPostingGroup."ASL.EFRIS.TaxCategory" = Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)") then
             CrNoteLineDetails.Add('taxRate', '0')
         else
@@ -2087,7 +2269,40 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                 CrNoteLineDetails.Add('taxRate', '-')
             else
                 CrNoteLineDetails.Add('taxRate', Format(Line."VAT %" * 0.01, 0, 1));
+        CrNoteLineDetails.Add('tax', Format(LineTaxAmount, 0, 1)); */
+
+        VatProdPostingGroup.Get(Line."VAT Prod. Posting Group");
+
+        if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+           Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+        then
+            CrNoteLineDetails.Add('taxRate', '0')
+        else
+            if Zero or
+               (VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)")
+            then
+                CrNoteLineDetails.Add('taxRate', '0')
+            else
+                if Exempt or
+                   (VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                    Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)")
+                then
+                    CrNoteLineDetails.Add('taxRate', '-')
+                else
+                    CrNoteLineDetails.Add(
+                        'taxRate',
+                        Format(Line."VAT %" * 0.01, 0, 1));
+
         CrNoteLineDetails.Add('tax', Format(LineTaxAmount, 0, 1));
+
+        if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+           Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+        then
+            CrNoteLineDetails.Add('vatApplicableFlag', '0')
+        else
+            CrNoteLineDetails.Add('vatApplicableFlag', '1');
+
         if Deemed then begin
             CrNoteLineDetails.Add('deemedFlag', Format(Enum::"ASL.EFRIS.Deemed"::"Deemed".AsInteger(), 0, 1));
             CrNoteLineDetails.Add('vatProjectId', Line.ProjectID);
@@ -2837,7 +3052,8 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                 LineGrossAmount -= LineDiscountGrossAmount;
                 LineTaxAmount -= LineDiscountTaxAmount;
             end;
-            if VATZero then
+
+            /* if VATZero then
                 VATTaxCategory := Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)"
             else
                 if SalesInvoice."ASL.EFRIS.VATDeemed" then
@@ -2849,7 +3065,35 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                         VatProdPostingGroup.Get(SalesInvoiceLines."VAT Prod. Posting Group");
                         VatProdPostingGroup.TestField("ASL.EFRIS.TaxCategory");
                         VATTaxCategory := VatProdPostingGroup."ASL.EFRIS.TaxCategory";
-                    end;
+                    end; */
+            if VATZero then
+                VATTaxCategory :=
+                    Enum::"ASL.EFRIS.TaxCategory"::"B: Zero (0%)"
+            else begin
+                VatProdPostingGroup.Get(
+                    SalesInvoiceLines."VAT Prod. Posting Group");
+                VatProdPostingGroup.TestField("ASL.EFRIS.TaxCategory");
+
+                if VatProdPostingGroup."ASL.EFRIS.TaxCategory" =
+                   Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+                then
+                    VATTaxCategory :=
+                        Enum::"ASL.EFRIS.TaxCategory"::"F: VAT OUT OF SCOPE"
+                else
+                    if SalesInvoice."ASL.EFRIS.VATDeemed" then
+                        VATTaxCategory :=
+                            Enum::"ASL.EFRIS.TaxCategory"::"D: Deemed (18%)"
+                    else
+                        if SalesInvoice."ASL.EFRIS.VATExempt" then
+                            VATTaxCategory :=
+                                Enum::"ASL.EFRIS.TaxCategory"::"C: Exempt (-)"
+                        else
+                            VATTaxCategory :=
+                                VatProdPostingGroup."ASL.EFRIS.TaxCategory";
+            end;
+
+            //
+
             AddSalesTaxDetails(VATTaxCategory, LineGrossAmount, SalesInvoiceLines."VAT %", LineTaxAmount, TaxDetailsAccuml);
             TotalGrossAmount += LineGrossAmount;
             TotalTaxAmount += LineTaxAmount;
@@ -2858,7 +3102,8 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         until SalesInvoiceLines.Next() = 0;
         Invoice.Add('goodsDetails', GoodsDetails);
         GoodsDetails.WriteTo(DetailsText);
-        // Message(DetailsText);
+
+        //Message(DetailsText); //F:
         // tax details
         if TaxDetailsAccuml.Count > 0 then begin
             TaxDetailsKeys := TaxDetailsAccuml.Keys();
