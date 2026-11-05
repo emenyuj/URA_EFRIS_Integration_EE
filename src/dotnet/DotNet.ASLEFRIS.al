@@ -21,6 +21,7 @@ dotnet
         type("System.Security.Cryptography.RSAEncryptionPadding"; "ASLEFRIS.RSAEncryptionPadding") { }
         type("System.Security.Cryptography.RSASignaturePadding"; "ASLEFRIS.RSASignaturePadding") { }
         type("System.Security.Cryptography.HashAlgorithmName"; "ASLEFRIS.HashAlgorithmName") { }
+        type("System.Security.Cryptography.X509Certificates.X509KeyStorageFlags"; "ASLEFRIS.X509KeyStorageFlags") { }
     }
 
     assembly("System")
@@ -30,7 +31,6 @@ dotnet
         PublicKeyToken = 'b77a5c561934e089';
 
         type("System.Security.Cryptography.X509Certificates.X509Certificate2"; "ASLEFRIS.X509Certificate2") { }
-        type("System.Security.Cryptography.X509Certificates.X509KeyStorageFlags"; "ASLEFRIS.X509KeyStorageFlags") { }
         type("System.IO.Compression.GZipStream"; "ASLEFRIS.GZipStream") { }
         type("System.IO.Compression.CompressionMode"; "ASLEFRIS.CompressionMode") { }
     }

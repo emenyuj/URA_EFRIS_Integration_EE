@@ -87,6 +87,7 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
         ErrDirectSymmetricKey: TextConst ENU = 'Could not obtain the EFRIS symmetric key (T104): %1';
         ErrNotDirectMode: TextConst ENU = 'This action is only available when Connection Mode is a Direct Online mode.';
         ErrEnablerOnly: TextConst ENU = 'tcsInfo is only available through the Offline Mode Enabler. In Direct Online mode use Get Taxpayer Info (T103).';
+        ErrDirectEnablerDevice: TextConst ENU = '(Device No. is registered on the EFRIS portal as an Offline Mode Enabler device. Direct Online mode needs a Virtual Device number: EFRIS portal > Device Management > Device Application > Device Type = Virtual Device.)';
         AESKeyMaxAgeMs: Integer;
 
 
@@ -3126,6 +3127,8 @@ codeunit 50004 "ASL.EFRIS.EFRISInterface"
                                     ResponseContent.ReadFrom(ResponseContentText);
             end else begin
                 ResponseError := true;
+                if LastReturnStateCode = '2889' then // TCS version check: device is registered as an Offline Mode Enabler device
+                    LastReturnStateMessage := LastReturnStateMessage + ' ' + ErrDirectEnablerDevice;
                 LogError(StrSubstNo('%1 %2: %3', InterfaceCode, LastReturnStateCode, LastReturnStateMessage));
                 // 02/03: encryption/decryption failed, 15: unpacking data error -> stale symmetric key
                 RetryWithNewKey := UsesAESKey and (RejectedAESKey = '') and (LastReturnStateCode in ['02', '03', '15']);

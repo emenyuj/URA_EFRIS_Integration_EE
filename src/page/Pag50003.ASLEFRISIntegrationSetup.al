@@ -191,6 +191,27 @@ page 50003 "ASL.EFRIS.IntegrationSetup"
                     Message(MsgKeyUploaded, CertificateInfo);
                 end;
             }
+            action(DownloadPublicCertificate)
+            {
+                ApplicationArea = All;
+                Caption = 'Download Public Certificate';
+                Image = Export;
+                ToolTip = 'Downloads the public certificate (no private key) contained in the uploaded .pfx, to compare with or upload to the EFRIS portal for this device.';
+
+                trigger OnAction()
+                var
+                    TempBlob: Codeunit "Temp Blob";
+                    CertOutStream: OutStream;
+                    CertInStream: InStream;
+                    FileName: Text;
+                begin
+                    TempBlob.CreateOutStream(CertOutStream, TextEncoding::UTF8);
+                    CertOutStream.WriteText(EFRISCrypto.GetPublicCertificatePem());
+                    TempBlob.CreateInStream(CertInStream, TextEncoding::UTF8);
+                    FileName := 'EFRIS_' + Rec."ASL.EFRIS.DeviceNo" + '_public.cer';
+                    DownloadFromStream(CertInStream, 'Download public certificate', '', 'Certificate (*.cer)|*.cer', FileName);
+                end;
+            }
             action(DeletePrivateKey)
             {
                 ApplicationArea = All;

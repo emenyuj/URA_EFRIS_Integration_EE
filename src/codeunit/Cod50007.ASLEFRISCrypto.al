@@ -1,4 +1,4 @@
-codeunit 50007 "ASL.EFRIS.Crypto"
+codeunit 50019 "ASL.EFRIS.Crypto"
 {
     // Cryptography and key management for the direct (online) EFRIS web service,
     // replacing what the Offline Mode Enabler used to do locally:
@@ -16,7 +16,8 @@ codeunit 50007 "ASL.EFRIS.Crypto"
         ErrNoPrivateKey: Label 'No EFRIS private key has been uploaded. Open EFRIS Integration Setup and use the action ''Upload Private Key (.pfx)''.';
         ErrCannotLoadKey: Label 'The EFRIS private key could not be loaded. Check the file and password.\%1';
         ErrNoPrivateKeyInFile: Label 'The uploaded certificate file does not contain a private key. Export the key pair (not only the public certificate) as a .pfx/.p12 file.';
-        ErrInvalidAESKey: Label 'The symmetric key returned by EFRIS (T104) could not be decrypted with the uploaded private key. Make sure the public key/thumbprint registered on the EFRIS portal for this device matches the uploaded private key.';
+        ErrRSADecryptFailed: Label 'RSA decryption of passowrdDes failed, so EFRIS encrypted the key with a different public key than the one in the uploaded .pfx (thumbprint %1). Register this key for Device No. on the EFRIS portal (Device Management > Device Public Key List and Thumbprint Configure List) or upload the matching .pfx. .NET error: %2', Comment = '%1 = thumbprint, %2 = .NET error';
+        ErrAESKeyLength: Label 'passowrdDes was decrypted but does not contain a usable AES key: %1 bytes decrypted, Base64-decoded length %2. Please report these numbers.', Comment = '%1 = decrypted length, %2 = decoded length';
         RSAKey: DotNet "ASLEFRIS.RSA";
         RSAKeyLoaded: Boolean;
 
@@ -168,19 +169,59 @@ codeunit 50007 "ASL.EFRIS.Crypto"
         EncryptedBytes: DotNet "ASLEFRIS.Array";
         DecryptedBytes: DotNet "ASLEFRIS.Array";
         KeyBytes: DotNet "ASLEFRIS.Array";
+        DecodedLength: Integer;
     begin
         // T104: passowrdDes = Base64( RSA_PKCS1( <AES key> ) ), encrypted with the device public key.
         // The decrypted value is normally the Base64 text of the AES key; raw key bytes are accepted too.
         EnsureRSAKey();
         EncryptedBytes := Convert.FromBase64String(PassowrdDes);
         if not TryRSADecrypt(EncryptedBytes, DecryptedBytes) then
-            Error(ErrInvalidAESKey);
-        if TryFromBase64(Encoding.ASCII.GetString(DecryptedBytes), KeyBytes) then
+            Error(ErrRSADecryptFailed, GetCertificateThumbprint(), GetLastErrorText());
+        DecodedLength := -1;
+        if TryFromBase64(Encoding.ASCII.GetString(DecryptedBytes), KeyBytes) then begin
+            DecodedLength := KeyBytes.Length;
             if IsValidAESKeyLength(KeyBytes.Length) then
                 exit(Convert.ToBase64String(KeyBytes));
+        end;
         if IsValidAESKeyLength(DecryptedBytes.Length) then
             exit(Convert.ToBase64String(DecryptedBytes));
-        Error(ErrInvalidAESKey);
+        Error(ErrAESKeyLength, DecryptedBytes.Length, DecodedLength);
+    end;
+
+    procedure GetCertificateThumbprint(): Text
+    var
+        PfxBase64: Text;
+        Cert: DotNet "ASLEFRIS.X509Certificate2";
+    begin
+        if not HasPrivateKey() then
+            exit('');
+        IsolatedStorage.Get(PfxStorageKeyTok, DataScope::Company, PfxBase64);
+        if not LoadCertificate(PfxBase64, GetSecret(PfxPasswordStorageKeyTok), Cert) then
+            exit('');
+        exit(Cert.Thumbprint);
+    end;
+
+    procedure GetPublicCertificatePem(): Text
+    var
+        Convert: DotNet "ASLEFRIS.Convert";
+        PfxBase64: Text;
+        Body: Text;
+        Pem: TextBuilder;
+        Cert: DotNet "ASLEFRIS.X509Certificate2";
+        i: Integer;
+    begin
+        // Public part only (no private key) - for comparing with / uploading to the EFRIS portal
+        if not HasPrivateKey() then
+            Error(ErrNoPrivateKey);
+        IsolatedStorage.Get(PfxStorageKeyTok, DataScope::Company, PfxBase64);
+        if not LoadCertificate(PfxBase64, GetSecret(PfxPasswordStorageKeyTok), Cert) then
+            Error(ErrCannotLoadKey, GetLastErrorText());
+        Body := Convert.ToBase64String(Cert.GetRawCertData());
+        Pem.AppendLine('-----BEGIN CERTIFICATE-----');
+        for i := 0 to (StrLen(Body) - 1) div 64 do
+            Pem.AppendLine(CopyStr(Body, i * 64 + 1, 64));
+        Pem.Append('-----END CERTIFICATE-----');
+        exit(Pem.ToText());
     end;
 
     [TryFunction]
